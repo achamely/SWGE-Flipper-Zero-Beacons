@@ -1,4 +1,6 @@
-// TitaNets Galaxy's Edge Beacon Emulator for Flipper Zero
+// Galaxy's Edge Beacon Emulator for Flipper Zero
+// --------------------------------------------------------
+// Original script and credit for payload data forked from : https://github.com/TitaNets/SWGE-Flipper-Zero-Beacons
 // --------------------------------------------------------
 // This application allows the emulation of beacons emitted by the droids from Droid Depot, 
 // including any of their personality chips and those located in the Galaxy's Edge theme park. 
@@ -9,9 +11,12 @@
 // The script must be uploaded to the apps\Scripts folder. 
 // To execute it, navigate from the Flipper Zero's screen to Apps and then to the Scripts option.
 
+let eventLoop = require("event_loop");
+let gui = require("gui");
+let submenuView = require("gui/submenu");
+let dialogView = require("gui/dialog");
+
 let blebeacon = require("blebeacon");
-let submenu = require("submenu");
-let dialog = require("dialog");
 let notify = require("notification");
 
 let commonPrefix = [
@@ -20,17 +25,19 @@ let commonPrefix = [
 ];
 
 print("Initializing beacons...");
-
 // Show a loading message while creating variables
-function showAboutMessage() {
-	notify.success();
-    dialog.custom({
-        header: "TitaNets",
-        text: "Visit titanets.com\nfor more solutions.",
-        button_center: "OK",
-        auto_close: false
-    });
+
+function extractNames(array) {
+	let names = [];
+	for (let i = 0; i < array.length; i++) {
+		let obj = array[i];
+		if (obj && obj.name !== undefined) {
+			names.push(obj.name);
+		}
+	}
+	return names;
 }
+
 function clearScreen() {
     // Print several new lines to effectively "clear" the console
     for (let i = 0; i < 20; i++) {
@@ -63,7 +70,7 @@ function createPayload(prefix, suffix) {
     return combinedArray;
 }
 
-// Function to convert an array of numbers to a hex string using to_hex_string
+// Function to convert an array of numbers to a hex string
 function uint8ArrayToHexString(array, ixStart) {
     let hexString = '';
 	if(ixStart === undefined) ixStart = 0;
@@ -71,8 +78,8 @@ function uint8ArrayToHexString(array, ixStart) {
     for (let i = ixStart; i < array.length; i++) {
         let value = array[i]; // Access the byte value using 'value'
 
-        // Convert value to hex string using to_hex_string
-        let hex = to_hex_string(value);
+        // Convert value to hex string
+        let hex = value.toString(16);
 
         // Ensure the hex string is two characters long
         hex = hex.length === 1 ? '0' + hex : hex;
@@ -84,7 +91,7 @@ function uint8ArrayToHexString(array, ixStart) {
         }
     }
 	
-	hexString = to_upper_case(hexString);	
+	hexString = hexString.toUpperCase();	
     return hexString;
 }
 
@@ -151,62 +158,80 @@ let personalityChipBeacons = [
 	{ id: 0x08, name: "Navy (RG-G1)", payload: createPayload(droidPrefix, [0x82, 0x0D]) },
 ];
 
+// declare view instances
+let views = {
+    beaconTypes: submenuView.makeWith({
+        header: "Choose Beacon Type",
+        items: [
+			"Location Beacons",
+            "Droid Beacons",
+            "Personality Chip Beacons",
+            "Exit app",
+        ],
+    }),
+	broadcasting: dialogView.make(),
+	droidBeacons: submenuView.makeWith({
+		header: "Choose Droid Beacon",
+		items: extractNames(droidBeacons),
+    }),
+	locationBeacons: submenuView.makeWith({
+		header: "Choose Location Beacon",
+		items: extractNames(locationBeacons),
+    }),
+	personalityChipBeacons: submenuView.makeWith({
+		header: "Choose Personality Chip Beacon",
+		items: extractNames(personalityChipBeacons),
+    }),
+};
+
+let events = [
+	{ view: views.locationBeacons, beacons: locationBeacons },
+	{ view: views.droidBeacons, beacons: droidBeacons },
+	{ view: views.personalityChipBeacons, beacons: personalityChipBeacons },
+];
+
 print("Starting...");
 notify.blink("magenta", "long");
 delay(500);
 clearScreen();
 
-function mainMenu() {
-	while (true) {
-        submenu.setHeader("Beacon Types:");
-        submenu.addItem("Droids", 0);
-        submenu.addItem("Locations", 1);
-        submenu.addItem("Personality Chips", 2);
-
-        let selectedMenu = submenu.show();
-
-        if (selectedMenu === undefined) {
-            break; // Exit the loop if the back button is pressed
-        } else if (selectedMenu === 0) {
-            showSubmenu(droidBeacons);
-        } else if (selectedMenu === 1) {
-            showSubmenu(locationBeacons);
-        } else if (selectedMenu === 2) {
-            showSubmenu(personalityChipBeacons);
-        }
+eventLoop.subscribe(views.beaconTypes.chosen, function (_sub, index, gui, eventLoop, views) {
+    if (index === 0) {
+		gui.viewDispatcher.switchTo(views.locationBeacons);
+    } else if (index === 1) {
+		gui.viewDispatcher.switchTo(views.droidBeacons);
+    } else if (index === 2) {
+		gui.viewDispatcher.switchTo(views.personalityChipBeacons);
+    } else if (index === 3) {
+        eventLoop.stop();
     }
+}, gui, eventLoop, views);
+
+for (let i = 0; i < events.length; i++) {
+	let beaconView=events[i].view;
+	let beacons=events[i].beacons;
+	eventLoop.subscribe(beaconView.chosen, function (_sub, index, gui, eventLoop, views, beacons) {
+		let selectedBeacon = beacons[index];
+		broadcastBeacon(selectedBeacon.payload);
+		views.broadcasting.set("header", "Broadcasting\n" + selectedBeacon.name);
+		views.broadcasting.set("text", uint8ArrayToHexString(selectedBeacon.payload, 5) + "\nPress OK to stop.");
+		views.broadcasting.set("center", "Stop");
+		gui.viewDispatcher.switchTo(views.broadcasting);
+	}, gui, eventLoop, views, beacons);
 }
+	
+eventLoop.subscribe(views.broadcasting.input, function (_sub, button, gui, views) {
+	if (button === "center") {
+		stopBroadcast();
+		gui.viewDispatcher.switchTo(views.beaconTypes);
+	}
+}, gui, views);
 
-function showSubmenu(beacons) {
-    while (true) {
-        submenu.setHeader("Select a Beacon:");
 
-        for (let i = 0; i < beacons.length; i++) {
-            let beacon = beacons[i];
-            submenu.addItem(beacon.name, i);
-        }
-
-        let selectedId = submenu.show();
-
-        if (selectedId === undefined) {
-            break; // Go back to previous menu if the back button is pressed
-        } else {
-            let selectedBeacon = beacons[selectedId];
-            broadcastBeacon(selectedBeacon.payload);
-
-            let dialogParams = {
-                header: "Broadcasting\n" + selectedBeacon.name,
-                text: uint8ArrayToHexString(selectedBeacon.payload, 5) + "\nPress OK to stop.",
-                button_center: "Stop"
-            };
-            dialog.custom(dialogParams);
-
-            stopBroadcast();
-        }
-    }
+function mainMenu() {
+	gui.viewDispatcher.switchTo(views.beaconTypes);
+	eventLoop.run();
 }
 
 stopBroadcast();
 mainMenu();
-showAboutMessage();
-print("Press back to exit.");
